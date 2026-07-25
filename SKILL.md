@@ -1,5 +1,6 @@
 ---
 title: "拆书成视频 Skill"
+version: "1.0.0"
 summary: "给一本书名，自动生成一条 9:16 竖屏书单短视频（AI 配图 + 语音朗读 + 中英字幕 + Ken Burns 镜头移动）"
 read_when:
   - 用户想把一本书做成短视频
