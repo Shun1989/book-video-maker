@@ -12,6 +12,15 @@ read_when:
 
 # 拆书成视频 Skill
 
+## TL;DR
+
+```bash
+python scripts/generate.py --book "被讨厌的勇气" --style cinematic --sentences 10
+# → 90 秒后得到 output/被讨厌的勇气_final.mp4（1080×1920 竖屏）
+```
+
+五步：文案 → 出图(9:16优先) → 语音 → 渲染(Ken Burns+字幕) → 合并
+
 ## 一句话
 
 给一本书名，出一条 9:16 竖屏短视频。AI 写文案、豆包出图、edge-tts 朗读、FFmpeg 渲染字幕和镜头移动，全自动。
@@ -82,6 +91,9 @@ output/
 | FFmpeg crop 报 "Invalid argument" | 检查 Ken Burns 表达式括号是否匹配 | 简化表达式去掉 if 判断 |
 | 合并时视频/音频时长不一致 | `-shortest` 参数截断 | 以视频时长为准，丢弃多余音频 |
 | 字幕乱码或方块 | 确认 msyhbd.ttc 存在且 fontfile 路径正确 | 安装微软雅黑字体或替换为 simhei.ttf |
+| API 限频（429） | 等待 5 秒重试 | 增大 `time.sleep` 间隔到 3 秒 |
+| 文案 JSON 解析失败 | 去除 ` ```json ` markdown 标记 | 用通用模板兜底 |
+| 合并后无声音 | 检查 voice_concat.txt 路径是否正确 | 用 `-map` 手动指定音轨 |
 
 ## 🛑 STOP · 启动前检查点
 
