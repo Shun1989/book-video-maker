@@ -4,8 +4,10 @@ version: "1.1.0"
 summary: "给一本书名，自动生成一条 9:16 竖屏书单短视频（AI 配图 + 语音朗读 + 中英字幕 + Ken Burns 镜头移动）"
 read_when:
   - 用户想把一本书做成短视频
-  - 用户提到"书单视频""拆书成视频""book video"
+  - 用户提到"书单视频""拆书成视频""book video""书单号"
   - 用户需要批量生成书单号内容
+  - 用户想用 AI 自动生成竖屏视频
+  - 用户提到"豆包出图""edge-tts""FFmpeg 视频渲染"
 ---
 
 # 拆书成视频 Skill
@@ -81,17 +83,26 @@ output/
 | 合并时视频/音频时长不一致 | `-shortest` 参数截断 | 以视频时长为准，丢弃多余音频 |
 | 字幕乱码或方块 | 确认 msyhbd.ttc 存在且 fontfile 路径正确 | 安装微软雅黑字体或替换为 simhei.ttf |
 
-## 🔴 检查点
+## 🛑 STOP · 启动前检查点
 
-| 位置 | 检查内容 | 不通过时处理 |
+运行前必须全部通过，否则脚本会退出：
+
+| # | 检查项 | 不通过时处理 |
 |---|---|---|
-| 启动前 | ARK_API_KEY 非空 | 从 `~/.baoyu-skills/.env` 加载；仍空则退出 |
-| 启动前 | ffmpeg/ffprobe 在 PATH | 提示安装 FFmpeg ≥ 6.0 |
-| 启动前 | 字体文件存在 | 提示路径，退出 |
-| 启动前 | edge-tts 已安装 | 提示 `pip install edge-tts` |
-| 出图后 | 每张图 > 0 字节 | 失败则用占位图替代 |
-| 语音后 | 每段 mp3 > 100 字节 | 失败则时长设 3.0 秒 |
-| 渲染后 | 每个片段 returncode == 0 | 打印 stderr 最后 200 字符，返回 None |
+| 1 | `ARK_API_KEY` 非空或 `~/.baoyu-skills/.env` 存在 | 手动配置环境变量 |
+| 2 | `ffmpeg -version` 返回 0 | 安装 FFmpeg ≥ 6.0 并加入 PATH |
+| 3 | `ffprobe -version` 返回 0 | 同上（FFmpeg 自带） |
+| 4 | `C:/Windows/Fonts/msyhbd.ttc` 存在 | 安装微软雅黑粗体 |
+| 5 | `C:/Windows/Fonts/arial.ttf` 存在 | 安装 Arial 字体 |
+| 6 | `import edge_tts` 成功 | `pip install edge-tts` |
+
+## 🔴 运行中检查点
+
+| 步骤 | 检查内容 | 失败时降级 |
+|---|---|---|
+| Step 2 出图后 | 每张图 > 0 字节 | 纯色 1440×2560 占位图 |
+| Step 3 语音后 | 每段 mp3 > 100 字节 | 时长设 3.0 秒，语音留空 |
+| Step 4 渲染后 | 每个片段 returncode == 0 | 打印 stderr 最后 200 字符，终止流程 |
 
 ## 反例黑名单（不要做）
 
