@@ -1,6 +1,6 @@
 ---
-title: "拆书成视频 Skill"
-version: "1.0.0"
+name: book-video-maker
+version: "1.1.0"
 summary: "给一本书名，自动生成一条 9:16 竖屏书单短视频（AI 配图 + 语音朗读 + 中英字幕 + Ken Burns 镜头移动）"
 read_when:
   - 用户想把一本书做成短视频
@@ -17,7 +17,7 @@ read_when:
 ## 依赖
 
 - Python 3.8+
-- FFmpeg + ffprobe（系统 PATH）
+- FFmpeg + ffprobe（系统 PATH，版本 ≥ 6.0，需 libfreetype 支持 drawtext）
 - edge-tts（`pip install edge-tts`）
 - requests（`pip install requests`）
 - 火山 ARK API Key（环境变量 `ARK_API_KEY`，或从 `~/.baoyu-skills/.env` 自动读取）
@@ -38,12 +38,12 @@ python scripts/generate.py --book "被讨厌的勇气" --skip-images --skip-gen-
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--book` | 必填 | 书名（中文） |
-| `--style` | cinematic | 画面风格前缀：cinematic / minimalist / watercolor / cyberpunk / vintage |
-| `--voice` | zh-CN-YunxiNeural | edge-tts 语音：YunxiNeural（男）/ XiaoxiaoNeural（女）/ YunjianNeural（男深沉） |
+| `--style` | cinematic | 画面风格：cinematic / minimalist / watercolor / cyberpunk / vintage |
+| `--voice` | zh-CN-YunxiNeural | edge-tts 语音：YunxiNeural（男）/ XiaoxiaoNeural（女）/ YunjianNeural（男深沉）/ YunyangNeural（专业播音） |
 | `--sentences` | 10 | 文案句数（8-20） |
 | `--output` | output/ | 产出目录 |
-| `--skip-gen-script` | false | 跳过文案生成，用已有的 JSON |
-| `--skip-images` | false | 跳过出图，用已有图片 |
+| `--skip-images` | false | 跳过出图，复用已有图片 |
+| `--skip-gen-script` | false | 跳过文案生成，复用已有 JSON |
 
 ## 产出
 
@@ -52,18 +52,59 @@ output/
 ├── {book}_final.mp4          ← 最终成片（1080×1920 H.264 + AAC）
 ├── {book}/
 │   ├── segments/             ← 各句视频片段
-│   ├── images/               ← AI 生成的配图（2048×2048）
+│   ├── images/               ← AI 生成的配图（优先 9:16，降级 1:1）
 │   ├── voices/               ← 逐句语音 mp3
 │   └── {book}_script.json    ← 文案数据（可复用/编辑）
 ```
 
 ## 流水线五步
 
-1. **文案生成**：内置 3 本书文案库（被讨厌的勇气 / 穷爸爸富爸爸 / 原子习惯），未命中时尝试 ARK 文本模型，兜底用通用模板
-2. **豆包出图**：每句英文 prompt 发给 doubao-seedream-5-0，生成 2048×2048 图片
-3. **语音合成**：edge-tts 逐句生成 mp3，ffprobe 获取精确时长
-4. **渲染片段**：FFmpeg scale+crop（Ken Burns 镜头移动）+ drawtext（中英字幕）+ 语音，输出单句片段
-5. **合并**：FFmpeg concat 拼接所有片段，叠加完整音轨，输出 1080×1920 mp4
+| 步骤 | 输入 | 处理 | 输出 |
+|---|---|---|---|
+| 1. 文案 | 书名 + 句数 + 风格 | 内置文案库 → ARK 文本模型 → 通用模板（三级降级） | JSON 数组（cn/en/prompt 三字段） |
+| 2. 配图 | 英文 prompt + 风格前缀 | 豆包 API 优先 9:16（1440×2560），降级 1:1（2048×2048）+ 竖屏构图提示 | 10 张 JPG |
+| 3. 语音 | 中文文案 + voice 参数 | edge-tts 逐句合成，ffprobe 取精确时长 | 10 段 mp3 + 时长列表 |
+| 4. 渲染 | 图片 + 语音 + 中英文案 | FFmpeg scale+crop（Ken Burns）+ drawtext（字幕）+ 语音 | 10 个 mp4 片段 |
+| 5. 合并 | 10 个片段 + 10 段语音 | FFmpeg concat 拼接视频 + concat 拼接音频 → 合流 | 1 条 1080×1920 mp4 |
+
+## 失败模式与处理（if-then 三段式）
+
+| 触发条件 | 一线修复 | 仍失败兜底 |
+|---|---|---|
+| ARK 文本模型 404 / 权限不足 | 切换到下一个模型 ID 尝试 | 降级到内置文案库或通用模板 |
+| 豆包出图返回 "size must be at least 3686400" | 尝试更大的 9:16 尺寸（1620×2880） | 降级到 2048×2048 + 竖屏构图提示 |
+| 豆包出图连续 3 次失败 | 检查 ARK_API_KEY 是否有效 | 生成纯色 1440×2560 占位图，流程不中断 |
+| edge-tts 断连 | 重试 3 次，间隔 2 秒 | 该句时长设为 3.0 秒，语音留空 |
+| FFmpeg drawtext 报 "No option name near" | 字体路径 `C:` 转义为 `C\:` | 确认字体文件存在于 `C:/Windows/Fonts/` |
+| FFmpeg drawtext 报 "Error parsing filterchain" | 英文撇号 `'` 替换为 unicode `\u2019` | 检查文案是否含 `:` `%` `\` 并转义 |
+| FFmpeg crop 报 "Invalid argument" | 检查 Ken Burns 表达式括号是否匹配 | 简化表达式去掉 if 判断 |
+| 合并时视频/音频时长不一致 | `-shortest` 参数截断 | 以视频时长为准，丢弃多余音频 |
+| 字幕乱码或方块 | 确认 msyhbd.ttc 存在且 fontfile 路径正确 | 安装微软雅黑字体或替换为 simhei.ttf |
+
+## 🔴 检查点
+
+| 位置 | 检查内容 | 不通过时处理 |
+|---|---|---|
+| 启动前 | ARK_API_KEY 非空 | 从 `~/.baoyu-skills/.env` 加载；仍空则退出 |
+| 启动前 | ffmpeg/ffprobe 在 PATH | 提示安装 FFmpeg ≥ 6.0 |
+| 启动前 | 字体文件存在 | 提示路径，退出 |
+| 启动前 | edge-tts 已安装 | 提示 `pip install edge-tts` |
+| 出图后 | 每张图 > 0 字节 | 失败则用占位图替代 |
+| 语音后 | 每段 mp3 > 100 字节 | 失败则时长设 3.0 秒 |
+| 渲染后 | 每个片段 returncode == 0 | 打印 stderr 最后 200 字符，返回 None |
+
+## 反例黑名单（不要做）
+
+| # | 反模式 | 为什么不要做 | 替代做法 |
+|---|---|---|---|
+| 1 | `scale=1188:2112` 不加 `force_original_aspect_ratio` | 1:1 图被拉伸变形，人脸变长 | 必须加 `:force_original_aspect_ratio=increase` |
+| 2 | 直接请求 1080×1920 出图 | 像素数 2073600 < 豆包最低 3686400 | 用 1440×2560 或 2048×2048 |
+| 3 | drawtext 的 `fontfile` 路径含 `C:` 不转义 | 冒号被当作选项分隔符 | `C\:/Windows/Fonts/...` |
+| 4 | drawtext 文案含英文撇号 `'` | 破坏 FFmpeg 单引号字符串 | 替换为 `\u2019`（unicode 右单引号） |
+| 5 | Ken Burns 表达式多余括号 | FFmpeg 报错位置不准，难定位 | 简化表达式，去掉嵌套 if |
+| 6 | Ken Burns 非移动轴不居中 | 裁切区域偏在角落，画面构图差 | 固定 `'(MAX_Y/2)'` 或 `'(MAX_X/2)'` |
+| 7 | 用 PIL 生成示意图当"截图" | 违反工具测评门槛（需真实截图） | 用 FFmpeg 提取真实帧或截屏 |
+| 8 | 混用不同 `--style` 生成同一本书 | 画面风格跳变 | 全书用同一 `--style` |
 
 ## 内置文案库
 
@@ -73,15 +114,32 @@ output/
 | 穷爸爸富爸爸 | 10 | 资产vs负债 / 被动收入 / 财商 |
 | 原子习惯 | 10 | 1%复利 / 四步循环 / 系统设计 |
 
-其他书籍会尝试 ARK 文本模型（需正确的模型 ID），或降级为通用模板。
+其他书籍会尝试 ARK 文本模型，或降级为通用模板。
 
-## 故障排查
+## 技术细节
 
-- **出图失败**：检查 ARK_API_KEY 是否有效，网络是否通 ark.cn-beijing.volces.com
-- **语音失败**：edge-tts 偶尔断连，脚本会重试 3 次
-- **字幕乱码**：确认字体路径 C:/Windows/Fonts/msyhbd.ttc 存在
-- **渲染报错**：检查 FFmpeg 版本 ≥ 6.0，drawtext 需要 libfreetype 支持
-- **画面风格跳**：同一本书用同一个 `--style` 参数，保证全局风格一致
+### 出图尺寸策略
+
+| 优先级 | 尺寸 | 比例 | 像素数 | 说明 |
+|---|---|---|---|---|
+| 1 | 1440×2560 | 9:16 | 3,686,400 | 精确 9:16，豆包最低线 |
+| 2 | 1620×2880 | 9:16 | 4,665,600 | 安全余量 |
+| 3（降级） | 2048×2048 | 1:1 | 4,194,304 | 加竖屏构图提示 |
+
+### Ken Burns 镜头移动
+
+两阶段裁切（无变形）：
+1. `scale=1188:2112:force_original_aspect_ratio=increase` — 无 distortion 缩放
+2. `crop=1188:2112:'(iw-1188)/2':'(ih-2112)/2'` — 居中裁切到统一尺寸
+3. `crop=1080:1920:X:Y` — Ken Burns 移动裁切
+
+4 个方向交替（右→左→下→上），非移动轴居中。
+
+### 字幕渲染
+
+- 中文：微软雅黑粗体 52px，白色 + 黑色阴影 + 黑色描边
+- 英文：Arial 32px，白色半透明 + 黑色阴影
+- 位置：画面 72% 高度处居中
 
 ## 实测数据（2026-07-25）
 
@@ -89,3 +147,7 @@ output/
 - 10 句文案 → 10 张 AI 配图 → 10 段语音 → 10 个片段 → 1 条成片
 - 成片：1080×1920，H.264，38.9 秒，4.9MB
 - 总耗时：约 90 秒（出图 60s + 语音 10s + 渲染 20s）
+
+## License
+
+MIT
