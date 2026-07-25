@@ -23,6 +23,13 @@ ARK_API_KEY = os.environ.get("ARK_API_KEY", "")
 ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 ARK_IMAGE_MODEL = "doubao-seedream-5-0-260128"
 
+# 出图尺寸：优先 9:16 竖屏，API 不支持时降级 1:1
+# 1440×2560 = 3,686,400 像素（豆包最低线），精确 9:16
+# 1620×2880 = 4,665,600 像素，精确 9:16，安全余量
+# 2048×2048 = 4,194,304 像素，1:1 降级方案（需配竖屏构图提示词）
+IMAGE_SIZES_PORTRAIT = ["1440x2560", "1620x2880"]
+IMAGE_SIZE_FALLBACK = "2048x2048"
+
 # 字体路径（验证存在用原始路径，FFmpeg drawtext 用转义路径）
 CN_FONT_PATH = "C:/Windows/Fonts/msyhbd.ttc"
 EN_FONT_PATH = "C:/Windows/Fonts/arial.ttf"
@@ -191,20 +198,54 @@ def _generate_generic_script(book_name, num_sentences, style):
 # ============================================================
 
 def generate_image(prompt, output_path, style_prefix=""):
-    """调用豆包文生图 API，生成 2048x2048 图片（后续裁切到竖屏）"""
-    full_prompt = f"{style_prefix} {prompt}".strip()
-
+    """调用豆包文生图 API，优先 9:16 竖屏，降级 1:1"""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {ARK_API_KEY}",
     }
+
+    # 优先尝试 9:16 竖屏尺寸
+    for size in IMAGE_SIZES_PORTRAIT:
+        full_prompt = f"{style_prefix} {prompt}".strip()
+        payload = {
+            "model": ARK_IMAGE_MODEL,
+            "prompt": full_prompt,
+            "size": size,
+            "response_format": "url",
+        }
+        for attempt in range(2):
+            try:
+                resp = requests.post(
+                    f"{ARK_BASE_URL}/images/generations",
+                    headers=headers,
+                    json=payload,
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if "data" in data and len(data["data"]) > 0:
+                    img_url = data["data"][0].get("url")
+                    if img_url:
+                        img_data = requests.get(img_url, timeout=60).content
+                        with open(output_path, "wb") as f:
+                            f.write(img_data)
+                        return True
+                err = data.get("error", {}).get("message", str(data))
+                print(f"  ⚠️ 出图异常 ({size}): {err}")
+            except Exception as e:
+                print(f"  ⚠️ 第 {attempt+1} 次出图失败 ({size}): {e}")
+            if attempt < 1:
+                time.sleep(5)
+
+    # 降级：1:1 + 竖屏构图提示
+    print(f"  ⚠️ 9:16 尺寸不可用，降级 1:1 + 竖屏构图提示")
+    full_prompt = f"vertical 9:16 composition, {style_prefix} {prompt}".strip()
     payload = {
         "model": ARK_IMAGE_MODEL,
         "prompt": full_prompt,
-        "size": "2048x2048",
+        "size": IMAGE_SIZE_FALLBACK,
         "response_format": "url",
     }
-
     for attempt in range(3):
         try:
             resp = requests.post(
@@ -223,9 +264,9 @@ def generate_image(prompt, output_path, style_prefix=""):
                         f.write(img_data)
                     return True
             err = data.get("error", {}).get("message", str(data))
-            print(f"  ⚠️ 出图异常: {err}")
+            print(f"  ⚠️ 降级出图异常: {err}")
         except Exception as e:
-            print(f"  ⚠️ 第 {attempt+1} 次出图失败: {e}")
+            print(f"  ⚠️ 降级第 {attempt+1} 次出图失败: {e}")
         if attempt < 2:
             time.sleep(5)
     return False
@@ -246,7 +287,7 @@ def generate_all_images(script_data, img_dir, style="cinematic"):
             print(f"      ✅ {os.path.getsize(img_path)//1024}KB")
         else:
             print(f"      ❌ 出图失败，用纯色占位")
-            _make_placeholder(img_path, 2048, 2048, i)
+            _make_placeholder(img_path, 1440, 2560, i)
             img_paths.append(img_path)
         time.sleep(1)
 
@@ -367,18 +408,30 @@ def create_segment(bg_path, voice_path, text_cn, text_en, duration, output_path,
         f"shadowx=2:shadowy=2:shadowcolor=black@0.6"
     )
 
-    # Ken Burns 镜头移动：4 个方向交替，从 1188x2112 缓慢裁切到 1080x1920
+    # Ken Burns 镜头移动：4 个方向交替
+    # 关键修复：使用 force_original_aspect_ratio=increase 防止 1:1 图片被拉伸变形
+    # 两阶段裁切：
+    #   1) scale 到覆盖 1188×2112 → center crop 到精确 1188×2112（去除 1:1 降级图多余宽度）
+    #   2) Ken Burns 从 1188×2112 裁切 1080×1920，偏移范围 x∈[0,108] y∈[0,192]
+    SCALE_W, SCALE_H = 1188, 2112
+    CROP_W, CROP_H = 1080, 1920
+    MAX_X = SCALE_W - CROP_W   # 108
+    MAX_Y = SCALE_H - CROP_H   # 192
+
+    # 阶段1：无 distortion 缩放 + 居中裁切到统一尺寸
+    base = f"scale={SCALE_W}:{SCALE_H}:force_original_aspect_ratio=increase,crop={SCALE_W}:{SCALE_H}:'(iw-{SCALE_W})/2':'(ih-{SCALE_H})/2'"
+
     directions = ["right", "left", "down", "up"]
     direction = directions[segment_idx % 4]
 
     if direction == "right":
-        ken_burns = "scale=1188:2112,crop=1080:1920:'min(t*60,108)':100"
+        ken_burns = f"{base},crop={CROP_W}:{CROP_H}:'min(t*60,{MAX_X})':'({MAX_Y}/2)'"
     elif direction == "left":
-        ken_burns = "scale=1188:2112,crop=1080:1920:'max(108-t*60,0)':100"
+        ken_burns = f"{base},crop={CROP_W}:{CROP_H}:'max({MAX_X}-t*60,0)':'({MAX_Y}/2)'"
     elif direction == "down":
-        ken_burns = "scale=1188:2112,crop=1080:1920:100:'min(t*60,192)'"
+        ken_burns = f"{base},crop={CROP_W}:{CROP_H}:'({MAX_X}/2)':'min(t*60,{MAX_Y})'"
     else:  # up
-        ken_burns = "scale=1188:2112,crop=1080:1920:100:'max(192-t*60,0)'"
+        ken_burns = f"{base},crop={CROP_W}:{CROP_H}:'({MAX_X}/2)':'max({MAX_Y}-t*60,0)'"
 
     vf = f"{ken_burns},{cn_filter},{en_filter}"
 
@@ -471,6 +524,7 @@ def merge_segments(seg_paths, voice_paths, output_path):
 
     # 合并语音
     valid_voices = [vp for vp in voice_paths if vp and os.path.exists(vp)]
+    voice_concat_file = os.path.join(work_dir, "voice_concat.txt")
     if valid_voices:
         voice_concat_file = os.path.join(work_dir, "voice_concat.txt")
         with open(voice_concat_file, "w", encoding="utf-8") as f:
@@ -619,7 +673,7 @@ def main():
             if os.path.exists(img_path):
                 img_paths.append(img_path)
             else:
-                _make_placeholder(img_path, 2048, 2048, i)
+                _make_placeholder(img_path, 1440, 2560, i)
                 img_paths.append(img_path)
     else:
         img_paths = generate_all_images(script_data, img_dir, args.style)
