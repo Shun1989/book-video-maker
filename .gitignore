@@ -1,0 +1,16 @@
+# Output directory (generated videos, images, voices)
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
