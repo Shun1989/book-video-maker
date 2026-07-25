@@ -2,6 +2,21 @@
 name: book-video-maker
 version: "1.1.0"
 summary: "给一本书名，自动生成一条 9:16 竖屏书单短视频（AI 配图 + 语音朗读 + 中英字幕 + Ken Burns 镜头移动）"
+triggers:
+  - "书单视频"
+  - "拆书成视频"
+  - "book video"
+  - "书单号"
+  - "竖屏视频"
+  - "豆包出图"
+  - "edge-tts"
+  - "FFmpeg 视频渲染"
+dependencies:
+  - "python>=3.8"
+  - "ffmpeg>=6.0"
+  - "edge-tts"
+  - "requests"
+  - "ARK_API_KEY"
 read_when:
   - 用户想把一本书做成短视频
   - 用户提到"书单视频""拆书成视频""book video""书单号"
